@@ -123,7 +123,18 @@ if uploaded_file:
     report_dt, report_day = get_report_info(uploaded_file)
     date_str = report_dt.strftime('%Y-%m-%d')
     start_w, end_w = get_week_range(report_dt)
+    # --- CARGA Y LIMPIEZA DE DATOS ---
     df_sales = pd.read_csv(uploaded_file, skiprows=6).fillna('')
+
+    # Esta función quita las comas de los números (ej: "3,473" -> 3473)
+    def clean_numeric_column(val):
+        if isinstance(val, str):
+            val = val.replace(',', '').strip()
+            return int(val) if val.isdigit() else 0
+        return int(val)
+
+    # Aplicamos la limpieza a la columna Count antes de procesarla
+    df_sales['Count'] = df_sales['Count'].apply(clean_numeric_column)
 
     # --- RAW DATA EXPANDER ---
     with st.expander("View Filtered Raw Data"):
