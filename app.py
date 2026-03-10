@@ -189,8 +189,13 @@ if uploaded_file:
         if item_details:
             df_items = pd.DataFrame(item_details).groupby('Item')['Count'].sum().reset_index()
             rows_combined = []
-            invoice_num = f"{partner_query.replace('-','').upper()}{report_dt.strftime('%m%d%y')}"
             
+            # --- 1. LÓGICA DE INVOICE (Prefijo + DDMMYY del Miércoles) ---
+            prefijo = partner_query.replace('-', ' ').split()[0].upper()
+            fecha_invoice_str = end_w.strftime('%d%m%y') # DíaMesAño para el Invoice
+            invoice_num = f"{prefijo}{fecha_invoice_str}"
+            
+            # --- 2. CONSTRUCCIÓN DE FILAS ---
             for i, day_name in enumerate(DAYS_NAME):
                 current_date = start_w + datetime.timedelta(days=i)
                 is_report_day = current_date.date() == report_dt.date()
@@ -199,39 +204,36 @@ if uploaded_file:
                 item_c = df_items.iloc[i]['Count'] if i < len(df_items) else ""
                 
                 rows_combined.append({
-                    'Date': current_date.strftime('%Y-%m-%d'),
+                    # Formato de fecha para la tabla: Mes-Día-Año
+                    'Date': current_date.strftime('%m-%d-%Y'),
                     'Day': day_name,
                     'Main St': f"{daily_val:,.2f}" if daily_val > 0 else "0",                    
                     'Total Net Sales': f"{daily_val:,.2f}" if daily_val > 0 else "0",
                     'Item Detail': item_n,
                     'Total Count': item_c
                 })
-            
+                
             if len(df_items) > 7:
                 for i in range(7, len(df_items)):
-                    rows_combined.append({'Date': '', 'Day': '', 'Main St': '', 'Total Net Sales': '', 'Item Detail': df_items.iloc[i]['Item'], 'Total Count': df_items.iloc[i]['Count']})
+                    rows_combined.append({
+                        'Date': '', 'Day': '', 'Main St': '', 
+                        'Total Net Sales': '', 
+                        'Item Detail': df_items.iloc[i]['Item'], 
+                        'Total Count': df_items.iloc[i]['Count']
+                    })
 
-            # --- LÓGICA DE SEGURIDAD PARA INVOICE NUMBER ---
-            # Tomamos la primera palabra de la búsqueda, quitamos guiones y pasamos a MAYÚSCULAS
-            prefijo = partner_query.replace('-', ' ').split()[0].upper()
-            
-            # Usamos la fecha del MIÉRCOLES (fin de semana) que ya está en end_w
-            fecha_invoice = end_w.strftime('%m%d%y') 
-            
-            # Creamos el número final (Ej: DOCK013026)
-            invoice_num = f"{prefijo}{fecha_invoice}"
-            # -----------------------------------------------
-
+            # --- 3. PREPARACIÓN DE DATAFRAME E INFO ---
             df_combined = pd.DataFrame(rows_combined)
             h_info = {
                 'invoice': invoice_num, 
-                'start': start_w.strftime('%Y-%m-%d'), 
-                'end': end_w.strftime('%Y-%m-%d')
+                'start': start_w.strftime('%m-%d-%Y'), 
+                'end': end_w.strftime('%m-%d-%Y')
             }
             
             st.info(f"**Invoice:** {h_info['invoice']} | **Period:** {h_info['start']} to {h_info['end']}")
             st.table(df_combined)
             
+            # --- 4. TOTALES Y MÉTRICAS ---
             st.subheader("Totals and Commissions")
             tax_val = partner_sales * 0.0825
             partner_com = partner_sales * 0.80
@@ -253,7 +255,6 @@ if uploaded_file:
             st.write("### Report Actions")
             c1, c2 = st.columns(2)
             with c1:
-                # Passing single DataFrame here works now
                 pdf_bytes = export_partner_pdf(df_combined, h_info, metrics_dict, f"{partner_query.upper()} Partner Report")
                 st.download_button("🖨️ Print PDF Report", data=pdf_bytes, file_name=f"Report_{partner_query}_{date_str}.pdf")
             with c2:
@@ -261,4 +262,3 @@ if uploaded_file:
                 st.download_button("📥 Download CSV Tracker", data=csv_bytes, file_name=f"Tracker_{partner_query}_{date_str}.csv")
         else:
             st.warning("No data found for this partner.")
-            
