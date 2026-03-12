@@ -115,6 +115,10 @@ def export_partner_csv(df_combined, header_info, metrics):
         output.write(f"{label},{val}\n")
     return output.getvalue().encode('utf-8')
 
+# --- INITIALIZE MEMORY ---
+if 'weekly_accumulator' not in st.session_state:
+    st.session_state.weekly_accumulator = []
+    
 # --- STREAMLIT INTERFACE ---
 st.title("🚀 Sales Automation System")
 uploaded_file = st.file_uploader("Upload 'Item Sales' file (CSV)", type="csv")
@@ -264,7 +268,37 @@ if uploaded_file:
             m2.metric(f"Tax (8.25%)", f"${tax_val:,.2f}")
             m3.metric(f"Partner ({partner_rate*100:.0f}%)", f"${partner_com:,.2f}")
             m4.metric(f"Aramark ({aramark_rate*100:.0f}%)", f"${aramark_com:,.2f}")
+            
+            if prefijo in ["SUSHI", "A2B"]:
+                    st.markdown("---")
+                    st.subheader(f"📅 {prefijo} Weekly Management")
+                    
+                    col_acc1, col_acc2 = st.columns(2)
+                    
+                    with col_acc1:
+                        if st.button(f"➕ Add {report_dt.strftime('%A')} to Weekly"):
+                            # Evitar duplicados del mismo día si quieres
+                            st.session_state.weekly_accumulator.append({
+                                'date': report_dt,
+                                'sales': partner_sales,
+                                'items': item_details
+                            })
+                            st.success(f"Added! Days stored: {len(st.session_state.weekly_accumulator)}")
+                    
+                    with col_acc2:
+                        if st.button("🗑️ Reset Weekly Memory"):
+                            st.session_state.weekly_accumulator = []
+                            st.rerun()
 
+                    # Mostrar días acumulados actualmente
+                    if st.session_state.weekly_accumulator:
+                        st.write("**Days in memory:**")
+                        for entry in st.session_state.weekly_accumulator:
+                            st.write(f"- {entry['date'].strftime('%m-%d-%Y')}: ${entry['sales']:,.2f}")
+
+            # --- BOTONES DE REPORTE DIARIO (EXISTENTES) ---
+            st.write("### Single Day Actions")
+            c1, c2 = st.columns(2)    
             # Casilla final resaltada para el Pago Total
             st.markdown("---")
             st.metric(label=f"💰 {pay_label}", value=f"${total_pay_val:,.2f}")
