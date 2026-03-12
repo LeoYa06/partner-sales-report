@@ -233,23 +233,49 @@ if uploaded_file:
             st.info(f"**Invoice:** {h_info['invoice']} | **Period:** {h_info['start']} to {h_info['end']}")
             st.table(df_combined)
             
-            # --- 4. TOTALES Y MÉTRICAS ---
-            st.subheader("Totals and Commissions")
-            tax_val = partner_sales * 0.0825
-            partner_com = partner_sales * 0.80
-            aramark_com = partner_sales * 0.20
+           # --- 4. LÓGICA DE COMISIONES DINÁMICAS Y TOTALES ---
+            # Definimos los porcentajes de Aramark por restaurante
+            # Si el restaurante no está en la lista, por defecto será 20%
+            COMMISSION_RATES = {
+                "DOCK": 0.20,
+                "ODA": 0.25,
+                "HALAL": 0.20,
+                "A2B": 0.25,
+                "LUCIS": 0.20,
+                "SUSHI": 0.25
+            }
             
+            # Obtenemos el porcentaje basado en el prefijo que ya calculamos
+            aramark_rate = COMMISSION_RATES.get(prefijo, 0.20)
+            partner_rate = 1.0 - aramark_rate
+            
+            # Cálculos financieros
+            tax_val = partner_sales * 0.0825
+            partner_com = partner_sales * partner_rate
+            aramark_com = partner_sales * aramark_rate
+            
+            # Nuevo cálculo: "Nombre Pay" = Tax + Partner Share
+            total_pay_val = tax_val + partner_com
+            pay_label = f"{prefijo.capitalize()} Pay"
+
+            st.subheader("Totals and Commissions")
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Net Sales", f"${partner_sales:,.2f}")
-            m2.metric("Tax (8.25%)", f"${tax_val:,.2f}")
-            m3.metric("Partner (80%)", f"${partner_com:,.2f}")
-            m4.metric("Aramark (20%)", f"${aramark_com:,.2f}")
+            m2.metric(f"Tax (8.25%)", f"${tax_val:,.2f}")
+            m3.metric(f"Partner ({partner_rate*100:.0f}%)", f"${partner_com:,.2f}")
+            m4.metric(f"Aramark ({aramark_rate*100:.0f}%)", f"${aramark_com:,.2f}")
 
+            # Casilla final resaltada para el Pago Total
+            st.markdown("---")
+            st.metric(label=f"💰 {pay_label}", value=f"${total_pay_val:,.2f}")
+
+            # Actualizamos el diccionario para el PDF y CSV
             metrics_dict = {
                 "Total Net Sales": f"${partner_sales:,.2f}",
                 "Tax (8.25%)": f"${tax_val:,.2f}",
-                "Partner Share (80%)": f"${partner_com:,.2f}",
-                "Aramark Share (20%)": f"${aramark_com:,.2f}"
+                f"Partner Share ({partner_rate*100:.0f}%)": f"${partner_com:,.2f}",
+                f"Aramark Share ({aramark_rate*100:.0f}%)": f"${aramark_com:,.2f}",
+                pay_label: f"${total_pay_val:,.2f}"
             }
             
             st.write("### Report Actions")
