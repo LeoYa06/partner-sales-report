@@ -443,7 +443,7 @@ def render_weekly_view(location: str, location_label: str, stations: list, start
     db_rows = load_week_from_supabase(location, start_w, end_w)
 
     if not db_rows:
-        st.info("No hay datos guardados esta semana aún. Sube cada día y guárdalo con el botón de arriba.")
+        st.info("No weekly data saved yet. Upload each day and save it using the button above.")
         return
 
     saved_dates = get_saved_dates_for_week(db_rows)
@@ -451,7 +451,7 @@ def render_weekly_view(location: str, location_label: str, stations: list, start
         datetime.datetime.strptime(d, '%Y-%m-%d').strftime('%A %m/%d')
         for d in saved_dates
     ])
-    st.success(f"📥 Días guardados esta semana: **{saved_days_str}**")
+    st.success(f"📥 Days saved this week: **{saved_days_str}**")
 
     df_weekly = build_weekly_tracker_from_db(db_rows, stations)
     st.dataframe(df_weekly, use_container_width=True)
@@ -514,7 +514,7 @@ if uploaded_file:
         stations         = STATIONS_PLANO2
         commission_rates = COMMISSION_RATES_PLANO2
     else:
-        st.warning("⚠️ No se detectó el local automáticamente. Selecciona:")
+        st.warning("⚠️ Location not detected automatically. Please select:")
         loc_choice = st.radio("Local", ["Plano 1", "Plano 2"], horizontal=True)
         if loc_choice == "Plano 1":
             location_label   = "Plano 1"
@@ -530,7 +530,7 @@ if uploaded_file:
     st.success(f"📍 **{location_label}** | {report_day}, {report_dt.strftime('%B %d, %Y')} | Semana: {start_w.strftime('%m/%d')} – {end_w.strftime('%m/%d/%Y')}")
 
     # --- Raw data ---
-    with st.expander("🔍 Ver datos crudos del CSV"):
+    with st.expander("🔍 Raw Data CSV"):
         st.dataframe(df_sales[['Item', 'Count', 'Pre-tax Total']], use_container_width=True)
 
     # ---- 1. STATION TRACKER (día actual) ----
@@ -550,14 +550,14 @@ if uploaded_file:
     col_pdf, col_save = st.columns(2)
     with col_pdf:
         st.download_button(
-            "🖨️ Imprimir Tracker del Día (PDF)",
+            "🖨️ Print Daily Tracker (PDF)",
             data=pdf_tracker,
             file_name=f"Tracker_{location_label.replace(' ','_')}_{date_str}.pdf"
         )
 
     # --- SAVE TO SUPABASE ---
     with col_save:
-        if st.button("💾 Guardar este día en Supabase", type="primary"):
+        if st.button("💾 Save this day", type="primary"):
             ok, msg = save_day_to_supabase(location_label, report_dt, report_day, daily_counts)
             if ok:
                 st.success(msg)
