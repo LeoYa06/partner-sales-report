@@ -2,17 +2,28 @@ import pandas as pd
 import datetime
 import io
 import streamlit as st
+from supabase import create_client, Client
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ============================================================
+# SUPABASE CONFIG
+# ============================================================
+SUPABASE_URL = "https://ecspmmhwlcxcftkfnbbf.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVjc3BtbWh3bGN4Y2Z0a2ZuYmJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4OTA4MDgsImV4cCI6MjA5MjQ2NjgwOH0.lAVH4ljNR2TKt-vU1aVZt69mg0YelXP4GRgxXTGFdrA"
+
+@st.cache_resource
+def get_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# ============================================================
 # CONFIGURATION & MAPPINGS
 # ============================================================
 st.set_page_config(page_title="Sales Automation System", layout="wide")
 
-# ---- PLANO 2 (original) ----
+# ---- PLANO 2 ----
 TAG_MAPPING_PLANO2 = {
     'far-east-mto': 'Far East Made to Order',
     'far-east-express-tracker': 'Far Easet Express',
@@ -49,19 +60,19 @@ COMMISSION_RATES_PLANO2 = {
     "A2B": 0.25, "LUCIS": 0.20, "SUSHI": 0.25
 }
 
-# ---- PLANO 1 (new) ----
+# ---- PLANO 1 ----
 TAG_MAPPING_PLANO1 = {
     'unomas-station-tracker-breakfast': 'Uno Mas Breakfast',
     'unomas-station-tracker':           'Uno Mas Lunch',
     'urbn-breakfast-station-tracker':   'Grab & Go Breakfast Sandwich',
     'g-g-station-tracker':              'Grab & Go Trading Post',
+    'g-g-breakfast':                    'Grab & Go Breakfast Sandwich',
     'station-tracker-omelet':           'Main Ingredient Omelet',
     'salad-bar-station-tracker':        'Salad Bar & Main Ingredient',
     'salt-and-sesame-station-tracker':  'Salt & Sesame',
     'fiamma-entree-station-tracker':    'Fiamma Entrée',
     'fiamma-pizza-station-tracker':     'Fiamma Pizza',
     'sushi-station-tracker':            'Grab n Go Sushi',
-    'g-g-breakfast':                    'Grab & Go Breakfast Sandwich',  # fallback tag
     'soup-station-tracker':             'Soup',
     'oatmeal-station-tracker':          'Oatmeal',
     'cookie-station-tracker':           'Hopes Cookies',
@@ -91,14 +102,85 @@ STATIONS_PLANO1 = [
 ]
 
 COMMISSION_RATES_PLANO1 = {
-    "ODA":   0.25,
-    "HALAL": 0.20,
-    "A2B":   0.25,
-    "SUSHI": 0.25,
+    "ODA": 0.25, "HALAL": 0.20, "A2B": 0.25, "SUSHI": 0.25,
 }
 
-# ---- Shared ----
 DAYS_NAME = ['Thursday', 'Friday', 'Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday']
+
+
+# ============================================================
+# SUPABASE HELPERS
+# ============================================================
+def save_day_to_supabase(location: str, report_dt: datetime.datetime, report_day: str, daily_counts: dict):
+    """Upsert daily station counts into Supabase. Returns (success, message)."""
+    try:
+        supabase = get_supabase()
+        records = []
+        for station, count in daily_counts.items():
+            records.append({
+                "location":    location,
+                "report_date": report_dt.strftime('%Y-%m-%d'),
+                "report_day":  report_day,
+                "station":     station,
+                "count":       int(count),
+            })
+        # Upsert: if same location+date+station exists, update count
+        supabase.table("daily_sales").upsert(
+            records,
+            on_conflict="location,report_date,station"
+        ).execute()
+        return True, f"✅ {report_day} {report_dt.strftime('%m-%d-%Y')} guardado en Supabase."
+    except Exception as e:
+        return False, f"❌ Error guardando en Supabase: {e}"
+
+
+def load_week_from_supabase(location: str, start_w: datetime.datetime, end_w: datetime.datetime):
+    """Load all days in the week range for this location from Supabase."""
+    try:
+        supabase = get_supabase()
+        resp = supabase.table("daily_sales") \
+            .select("*") \
+            .eq("location", location) \
+            .gte("report_date", start_w.strftime('%Y-%m-%d')) \
+            .lte("report_date", end_w.strftime('%Y-%m-%d')) \
+            .execute()
+        return resp.data or []
+    except Exception as e:
+        st.warning(f"No se pudieron cargar datos de Supabase: {e}")
+        return []
+
+
+def build_weekly_tracker_from_db(db_rows: list, stations: list) -> pd.DataFrame:
+    """Build the weekly tracker DataFrame from Supabase rows."""
+    # Build a dict: {station: {day: count}}
+    data = {stn: {d: 0 for d in DAYS_NAME} for stn in stations}
+
+    for row in db_rows:
+        stn = row['station']
+        day = row['report_day']
+        cnt = row['count']
+        if stn in data and day in DAYS_NAME:
+            data[stn][day] += cnt
+
+    rows = []
+    for stn in stations:
+        r = {'Station': stn}
+        total = 0
+        for d in DAYS_NAME:
+            r[d] = data[stn][d]
+            total += data[stn][d]
+        r['Weekly Total'] = total
+        rows.append(r)
+
+    return pd.DataFrame(rows)
+
+
+def get_saved_dates_for_week(db_rows: list) -> list:
+    """Return list of unique dates already saved in DB for this week."""
+    dates = set()
+    for row in db_rows:
+        dates.add(row['report_date'])
+    return sorted(list(dates))
 
 
 # ============================================================
@@ -122,13 +204,13 @@ def get_report_info(uploaded_file):
 
 
 def get_location_name(uploaded_file):
-    """Read first line to detect if it's Plano 1 or Plano 2."""
+    """Detect Plano 1 or Plano 2 from first line of CSV."""
     uploaded_file.seek(0)
-    first_line = uploaded_file.getvalue().decode('utf-8').splitlines()[0]
-    first_line_lower = first_line.lower()
-    if 'plano 1' in first_line_lower or 'plano1' in first_line_lower or 'main st' in first_line_lower:
+    first_line = uploaded_file.getvalue().decode('utf-8').splitlines()[0].lower()
+    # Simple keyword: "plano" followed by 1 or 2
+    if 'plano 1' in first_line or 'plano1' in first_line:
         return 'plano1'
-    if 'plano 2' in first_line_lower or 'plano2' in first_line_lower or 'far east' in first_line_lower:
+    if 'plano 2' in first_line or 'plano2' in first_line:
         return 'plano2'
     return 'unknown'
 
@@ -144,18 +226,18 @@ def load_sales_df(uploaded_file):
     uploaded_file.seek(0)
     df = pd.read_csv(uploaded_file, skiprows=6).fillna('')
 
-    def clean_numeric_column(val):
+    def clean_numeric(val):
         if isinstance(val, str):
             val = val.replace(',', '').strip()
             return int(val) if val.isdigit() else 0
-        return int(val) if str(val).isdigit() else 0
+        return int(val) if str(val).strip().isdigit() else 0
 
-    df['Count'] = df['Count'].apply(clean_numeric_column)
+    df['Count'] = df['Count'].apply(clean_numeric)
     return df
 
 
 # ============================================================
-# EXPORT GENERATORS (shared)
+# EXPORT GENERATORS
 # ============================================================
 def export_partner_pdf(df_combined, header_info, metrics, title):
     buffer = io.BytesIO()
@@ -169,7 +251,6 @@ def export_partner_pdf(df_combined, header_info, metrics, title):
     elements.append(Paragraph(title, styles['Title']))
 
     dfs_to_process = df_combined if isinstance(df_combined, list) else [df_combined]
-
     for df in dfs_to_process:
         data = [df.columns.to_list()] + df.values.tolist()
         t = Table(data)
@@ -204,9 +285,10 @@ def export_partner_csv(df_combined, header_info, metrics):
 
 
 # ============================================================
-# STATION TRACKER BUILDER
+# STATION TRACKER BUILDER (single day)
 # ============================================================
-def build_station_tracker(df_sales, tag_mapping, stations, report_day):
+def compute_daily_counts(df_sales, tag_mapping, stations):
+    """Returns dict {station: count} for one day's CSV."""
     daily_counts = {stn: 0 for stn in stations}
     for _, row in df_sales.iterrows():
         tags = [t.strip() for t in str(row['Tags']).split(',')]
@@ -216,30 +298,33 @@ def build_station_tracker(df_sales, tag_mapping, stations, report_day):
                 if name in daily_counts:
                     daily_counts[name] += row['Count']
                 break
+    return daily_counts
 
-    tracker_data = []
+
+def build_single_day_tracker(daily_counts, stations, report_day):
+    rows = []
     for stn in stations:
-        row_data = {'Station': stn}
+        r = {'Station': stn}
         for d in DAYS_NAME:
-            row_data[d] = 0
+            r[d] = 0
         if report_day in DAYS_NAME:
-            row_data[report_day] = daily_counts[stn]
-        row_data['Weekly Total'] = daily_counts[stn]
-        tracker_data.append(row_data)
-
-    return pd.DataFrame(tracker_data)
+            r[report_day] = daily_counts.get(stn, 0)
+        r['Weekly Total'] = daily_counts.get(stn, 0)
+        rows.append(r)
+    return pd.DataFrame(rows)
 
 
 # ============================================================
-# PARTNER EXTRACT (shared logic)
+# PARTNER EXTRACT
 # ============================================================
 def render_partner_extract(df_sales, report_dt, start_w, end_w, commission_rates, location_label):
     st.write("---")
     st.header(f"2. Partner Extract — {location_label}")
 
+    default_partner = "dock-local" if "Plano 2" in location_label else "oda"
     partner_query = st.text_input(
         "Search Partner or Tag",
-        value="dock-local" if location_label == "Plano 2" else "oda",
+        value=default_partner,
         key=f"partner_query_{location_label}"
     ).lower()
 
@@ -262,19 +347,17 @@ def render_partner_extract(df_sales, report_dt, start_w, end_w, commission_rates
         return
 
     df_items = pd.DataFrame(item_details).groupby('Item')['Count'].sum().reset_index()
-    rows_combined = []
-
     prefijo = partner_query.replace('-', ' ').split()[0].upper()
     fecha_invoice_str = end_w.strftime('%d%m%y')
     invoice_num = f"{prefijo}{fecha_invoice_str}"
 
+    rows_combined = []
     for i, day_name in enumerate(DAYS_NAME):
         current_date = start_w + datetime.timedelta(days=i)
         is_report_day = current_date.date() == report_dt.date()
         daily_val = partner_sales if is_report_day else 0.0
         item_n = df_items.iloc[i]['Item'] if i < len(df_items) else ""
         item_c = df_items.iloc[i]['Count'] if i < len(df_items) else ""
-
         rows_combined.append({
             'Date': current_date.strftime('%m-%d-%Y'),
             'Day': day_name,
@@ -287,8 +370,7 @@ def render_partner_extract(df_sales, report_dt, start_w, end_w, commission_rates
     if len(df_items) > 7:
         for i in range(7, len(df_items)):
             rows_combined.append({
-                'Date': '', 'Day': '', 'Main St': '',
-                'Total Net Sales': '',
+                'Date': '', 'Day': '', 'Main St': '', 'Total Net Sales': '',
                 'Item Detail': df_items.iloc[i]['Item'],
                 'Total Count': df_items.iloc[i]['Count']
             })
@@ -305,137 +387,185 @@ def render_partner_extract(df_sales, report_dt, start_w, end_w, commission_rates
 
     aramark_rate = commission_rates.get(prefijo, 0.20)
     partner_rate = 1.0 - aramark_rate
-
-    tax_val = partner_sales * 0.0825
-    partner_com = partner_sales * partner_rate
-    aramark_com = partner_sales * aramark_rate
+    tax_val       = partner_sales * 0.0825
+    partner_com   = partner_sales * partner_rate
+    aramark_com   = partner_sales * aramark_rate
     total_pay_val = tax_val + partner_com
-    pay_label = f"{prefijo.capitalize()} Pay"
+    pay_label     = f"{prefijo.capitalize()} Pay"
 
     st.subheader("Totals and Commissions")
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Net Sales", f"${partner_sales:,.2f}")
-    m2.metric("Tax (8.25%)", f"${tax_val:,.2f}")
+    m1.metric("Net Sales",              f"${partner_sales:,.2f}")
+    m2.metric("Tax (8.25%)",            f"${tax_val:,.2f}")
     m3.metric(f"Partner ({partner_rate*100:.0f}%)", f"${partner_com:,.2f}")
     m4.metric(f"Aramark ({aramark_rate*100:.0f}%)", f"${aramark_com:,.2f}")
 
-    if prefijo in ["SUSHI", "A2B"]:
-        st.markdown("---")
-        st.subheader(f"📅 {prefijo} Weekly Management")
-        col_acc1, col_acc2 = st.columns(2)
-
-        week_key = f'weekly_accumulator_{location_label}_{prefijo}'
-        if week_key not in st.session_state:
-            st.session_state[week_key] = []
-
-        with col_acc1:
-            if st.button(f"➕ Add {report_dt.strftime('%A')} to Weekly", key=f"add_{location_label}_{prefijo}"):
-                st.session_state[week_key].append({
-                    'date': report_dt,
-                    'sales': partner_sales,
-                    'items': item_details
-                })
-                st.success(f"Added! Days stored: {len(st.session_state[week_key])}")
-
-        with col_acc2:
-            if st.button("🗑️ Reset Weekly Memory", key=f"reset_{location_label}_{prefijo}"):
-                st.session_state[week_key] = []
-                st.rerun()
-
-        if st.session_state[week_key]:
-            st.write("**Days in memory:**")
-            for entry in st.session_state[week_key]:
-                st.write(f"- {entry['date'].strftime('%m-%d-%Y')}: ${entry['sales']:,.2f}")
-
-    st.write("### Single Day Actions")
     st.markdown("---")
     st.metric(label=f"💰 {pay_label}", value=f"${total_pay_val:,.2f}")
 
     metrics_dict = {
-        "Total Net Sales": f"${partner_sales:,.2f}",
-        "Tax (8.25%)": f"${tax_val:,.2f}",
+        "Total Net Sales":                        f"${partner_sales:,.2f}",
+        "Tax (8.25%)":                            f"${tax_val:,.2f}",
         f"Partner Share ({partner_rate*100:.0f}%)": f"${partner_com:,.2f}",
         f"Aramark Share ({aramark_rate*100:.0f}%)": f"${aramark_com:,.2f}",
-        pay_label: f"${total_pay_val:,.2f}"
+        pay_label:                                f"${total_pay_val:,.2f}"
     }
 
     st.write("### Report Actions")
     c1, c2 = st.columns(2)
     with c1:
-        pdf_bytes = export_partner_pdf(df_combined, h_info, metrics_dict, f"{partner_query.upper()} Partner Report — {location_label}")
-        st.download_button("🖨️ Print PDF Report", data=pdf_bytes, file_name=f"Report_{partner_query}_{date_str}.pdf", key=f"pdf_{location_label}_{partner_query}")
+        pdf_bytes = export_partner_pdf(
+            df_combined, h_info, metrics_dict,
+            f"{partner_query.upper()} Partner Report — {location_label}"
+        )
+        st.download_button(
+            "🖨️ Print PDF Report", data=pdf_bytes,
+            file_name=f"Report_{partner_query}_{date_str}.pdf",
+            key=f"pdf_{location_label}_{partner_query}"
+        )
     with c2:
         csv_bytes = export_partner_csv(df_combined, h_info, metrics_dict)
-        st.download_button("📥 Download CSV Tracker", data=csv_bytes, file_name=f"Tracker_{partner_query}_{date_str}.csv", key=f"csv_{location_label}_{partner_query}")
+        st.download_button(
+            "📥 Download CSV Tracker", data=csv_bytes,
+            file_name=f"Tracker_{partner_query}_{date_str}.csv",
+            key=f"csv_{location_label}_{partner_query}"
+        )
 
 
 # ============================================================
-# STREAMLIT INTERFACE
+# WEEKLY VIEW (from Supabase)
+# ============================================================
+def render_weekly_view(location: str, location_label: str, stations: list, start_w, end_w):
+    st.write("---")
+    st.header(f"3. 📅 Weekly Tracker Acumulado — {location_label}")
+    st.caption(f"Semana: {start_w.strftime('%m-%d-%Y')} → {end_w.strftime('%m-%d-%Y')}")
+
+    db_rows = load_week_from_supabase(location, start_w, end_w)
+
+    if not db_rows:
+        st.info("No hay datos guardados esta semana aún. Sube cada día y guárdalo con el botón de arriba.")
+        return
+
+    saved_dates = get_saved_dates_for_week(db_rows)
+    saved_days_str = ", ".join([
+        datetime.datetime.strptime(d, '%Y-%m-%d').strftime('%A %m/%d')
+        for d in saved_dates
+    ])
+    st.success(f"📥 Días guardados esta semana: **{saved_days_str}**")
+
+    df_weekly = build_weekly_tracker_from_db(db_rows, stations)
+    st.dataframe(df_weekly, use_container_width=True)
+
+    # Export weekly PDF
+    h_info = {
+        'invoice': 'WEEKLY',
+        'start': start_w.strftime('%m-%d-%Y'),
+        'end': end_w.strftime('%m-%d-%Y')
+    }
+    pdf_weekly = export_partner_pdf(
+        df_weekly, h_info, {},
+        f"Weekly Station Tracker — {location_label}"
+    )
+    st.download_button(
+        "🖨️ Exportar Weekly Tracker (PDF)",
+        data=pdf_weekly,
+        file_name=f"WeeklyTracker_{location_label.replace(' ','_')}_{start_w.strftime('%Y-%m-%d')}.pdf",
+        key=f"weekly_pdf_{location_label}"
+    )
+
+    # Export weekly CSV
+    csv_out = io.StringIO()
+    csv_out.write(f"Weekly Tracker — {location_label}\n")
+    csv_out.write(f"Semana: {start_w.strftime('%m-%d-%Y')} to {end_w.strftime('%m-%d-%Y')}\n\n")
+    df_weekly.to_csv(csv_out, index=False)
+    st.download_button(
+        "📥 Exportar Weekly Tracker (CSV)",
+        data=csv_out.getvalue().encode('utf-8'),
+        file_name=f"WeeklyTracker_{location_label.replace(' ','_')}_{start_w.strftime('%Y-%m-%d')}.csv",
+        key=f"weekly_csv_{location_label}"
+    )
+
+
+# ============================================================
+# MAIN APP
 # ============================================================
 st.title("🚀 Sales Automation System")
+st.caption("JPMC Plano — Aramark")
 
-# Initialize session states
-if 'weekly_accumulator' not in st.session_state:
-    st.session_state.weekly_accumulator = []
-
-# ---- File upload ----
-uploaded_file = st.file_uploader("Upload 'Item Sales' file (CSV)", type="csv")
+uploaded_file = st.file_uploader("📂 Upload 'Item Sales' CSV", type="csv")
 
 if uploaded_file:
+    # --- Parse file ---
     report_dt, report_day = get_report_info(uploaded_file)
-    date_str = report_dt.strftime('%Y-%m-%d')
+    date_str   = report_dt.strftime('%Y-%m-%d')
     start_w, end_w = get_week_range(report_dt)
-    location = get_location_name(uploaded_file)
-    df_sales = load_sales_df(uploaded_file)
+    location   = get_location_name(uploaded_file)
+    df_sales   = load_sales_df(uploaded_file)
 
-    # Detect location and show label
+    # --- Detect location ---
     if location == 'plano1':
-        location_label = "Plano 1 — Main St"
-        tag_mapping = TAG_MAPPING_PLANO1
-        stations = STATIONS_PLANO1
+        location_label   = "Plano 1"
+        tag_mapping      = TAG_MAPPING_PLANO1
+        stations         = STATIONS_PLANO1
         commission_rates = COMMISSION_RATES_PLANO1
-        st.success(f"📍 **Location detected: {location_label}**  |  Date: {report_dt.strftime('%A, %B %d %Y')}")
     elif location == 'plano2':
-        location_label = "Plano 2"
-        tag_mapping = TAG_MAPPING_PLANO2
-        stations = STATIONS_PLANO2
+        location_label   = "Plano 2"
+        tag_mapping      = TAG_MAPPING_PLANO2
+        stations         = STATIONS_PLANO2
         commission_rates = COMMISSION_RATES_PLANO2
-        st.success(f"📍 **Location detected: {location_label}**  |  Date: {report_dt.strftime('%A, %B %d %Y')}")
     else:
-        # Ask user to select manually
-        st.warning("⚠️ Could not auto-detect location. Please select manually:")
-        loc_choice = st.radio("Select Location", ["Plano 1 — Main St", "Plano 2"], horizontal=True)
-        if loc_choice == "Plano 1 — Main St":
-            location_label = "Plano 1 — Main St"
-            tag_mapping = TAG_MAPPING_PLANO1
-            stations = STATIONS_PLANO1
+        st.warning("⚠️ No se detectó el local automáticamente. Selecciona:")
+        loc_choice = st.radio("Local", ["Plano 1", "Plano 2"], horizontal=True)
+        if loc_choice == "Plano 1":
+            location_label   = "Plano 1"
+            tag_mapping      = TAG_MAPPING_PLANO1
+            stations         = STATIONS_PLANO1
             commission_rates = COMMISSION_RATES_PLANO1
         else:
-            location_label = "Plano 2"
-            tag_mapping = TAG_MAPPING_PLANO2
-            stations = STATIONS_PLANO2
+            location_label   = "Plano 2"
+            tag_mapping      = TAG_MAPPING_PLANO2
+            stations         = STATIONS_PLANO2
             commission_rates = COMMISSION_RATES_PLANO2
 
-    # ---- Raw Data ----
-    with st.expander("View Filtered Raw Data"):
+    st.success(f"📍 **{location_label}** | {report_day}, {report_dt.strftime('%B %d, %Y')} | Semana: {start_w.strftime('%m/%d')} – {end_w.strftime('%m/%d/%Y')}")
+
+    # --- Raw data ---
+    with st.expander("🔍 Ver datos crudos del CSV"):
         st.dataframe(df_sales[['Item', 'Count', 'Pre-tax Total']], use_container_width=True)
 
-    # ---- 1. STATION TRACKER ----
-    st.header(f"1. Station Tracker — {location_label}")
-    df_tracker = build_station_tracker(df_sales, tag_mapping, stations, report_day)
+    # ---- 1. STATION TRACKER (día actual) ----
+    st.header(f"1. Station Tracker — {location_label} ({report_day})")
+
+    daily_counts = compute_daily_counts(df_sales, tag_mapping, stations)
+    df_tracker   = build_single_day_tracker(daily_counts, stations, report_day)
     st.dataframe(df_tracker, use_container_width=True)
 
+    # Export single day PDF
     pdf_tracker = export_partner_pdf(
         df_tracker,
         {"invoice": "N/A", "start": date_str, "end": date_str},
         {},
-        f"Station Tracker — {location_label}"
+        f"Station Tracker — {location_label} — {report_day} {date_str}"
     )
-    st.download_button(
-        "🖨️ Print Station Tracker (PDF)",
-        data=pdf_tracker,
-        file_name=f"Tracker_{location_label.replace(' ', '_')}_{date_str}.pdf"
-    )
+    col_pdf, col_save = st.columns(2)
+    with col_pdf:
+        st.download_button(
+            "🖨️ Imprimir Tracker del Día (PDF)",
+            data=pdf_tracker,
+            file_name=f"Tracker_{location_label.replace(' ','_')}_{date_str}.pdf"
+        )
+
+    # --- SAVE TO SUPABASE ---
+    with col_save:
+        if st.button("💾 Guardar este día en Supabase", type="primary"):
+            ok, msg = save_day_to_supabase(location_label, report_dt, report_day, daily_counts)
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
 
     # ---- 2. PARTNER EXTRACT ----
     render_partner_extract(df_sales, report_dt, start_w, end_w, commission_rates, location_label)
+
+    # ---- 3. WEEKLY VIEW (from Supabase) ----
+    render_weekly_view(location_label, location_label, stations, start_w, end_w)
